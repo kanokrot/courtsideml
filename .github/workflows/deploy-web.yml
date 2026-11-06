@@ -3,11 +3,6 @@ name: Deploy Courtside 3D to GitHub Pages
 on:
   push:
     branches: [main]
-    paths:
-      - 'web/**'
-      - 'data/processed/stephen_curry_2025.csv'
-      - 'data/processed/paige_bueckers_2025.csv'
-      - '.github/workflows/deploy-web.yml'
   workflow_dispatch:
 
 permissions:
@@ -16,42 +11,34 @@ permissions:
   id-token: write
 
 concurrency:
-  group: github-pages
+  group: pages
   cancel-in-progress: true
 
 jobs:
-  build-and-deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Set up Node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
-
-      - name: Install dependencies
+      - run: npm ci
         working-directory: web
-        run: npm ci
-
-      - name: Build site
+      - run: npm run build
         working-directory: web
-        run: npm run build
-
-      - name: Configure Pages
-        uses: actions/configure-pages@45bfe2410a5b96eb724b4c6a0e40820c5cf54140 # v6
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
         with:
           path: web/dist
 
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
