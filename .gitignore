@@ -1,0 +1,6 @@
+sites/
+*.zip
+__pycache__/
+node_modules/
+.npm-cache/
+web/dist/

@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#07110f" />
+    <meta name="description" content="Explore basketball shot volume and field-goal percentage in an interactive 3D half court." />
+    <title>Courtside 3D — Shot Lab</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to shot chart</a>
+    <div class="page-shell">
+      <header class="topbar">
+        <a class="brand" href="#top" aria-label="Courtside 3D home">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>COURTSIDE<span class="brand-light"> / LAB</span></span>
+        </a>
+        <div class="topbar-right">
+          <span class="season-tag"><span class="live-dot"></span> 2025 SEASON DATA</span>
+          <button id="motion-toggle" class="motion-button" type="button" aria-pressed="false" title="Toggle reduced motion">Motion: <span>Full</span></button>
+        </div>
+      </header>
+
+      <main id="main">
+        <section class="intro" id="top" aria-labelledby="page-title">
+          <div class="intro-copy">
+            <p class="eyebrow">THE SHOT MAP, REIMAGINED</p>
+            <h1 id="page-title">READ THE<br /><span>FLOOR<span class="period">.</span></span></h1>
+            <p class="intro-deck">Every attempt has a place. Explore where the volume builds and where the shots fall.</p>
+          </div>
+          <div class="intro-aside" aria-hidden="true">
+            <span class="aside-index">01 — 02</span>
+            <span class="court-stamp">3D<br />SHOT<br />LAB</span>
+          </div>
+        </section>
+
+        <section class="workspace" aria-label="Interactive shot chart">
+          <div class="workspace-head">
+            <div>
+              <p class="eyebrow">PLAYER PROFILE <span class="eyebrow-dash"></span> 2025</p>
+              <h2 id="player-heading">Stephen Curry</h2>
+            </div>
+            <div class="player-control">
+              <label for="player-select">PLAYER</label>
+              <select id="player-select" aria-describedby="data-source">
+                <option value="curry">Stephen Curry · NBA</option>
+                <option value="paige">Paige Bueckers · WNBA</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="summary-grid" aria-live="polite" aria-atomic="true">
+            <article class="summary-card summary-primary">
+              <span class="summary-label">FIELD GOAL</span>
+              <strong id="fg-value">—</strong>
+              <span id="fg-record" class="summary-foot">MADE / ATTEMPTS</span>
+            </article>
+            <article class="summary-card">
+              <span class="summary-label">ATTEMPTS</span>
+              <strong id="attempts-value">—</strong>
+              <span class="summary-foot">FILTERED SHOTS</span>
+            </article>
+            <article class="summary-card">
+              <span class="summary-label">MADE</span>
+              <strong id="made-value">—</strong>
+              <span class="summary-foot">BUCKETS</span>
+            </article>
+            <article class="summary-card">
+              <span class="summary-label">MOST ACTIVE ZONE</span>
+              <strong id="hot-zone-value" class="zone-value">—</strong>
+              <span id="hot-zone-foot" class="summary-foot">SHOTS IN THE ZONE</span>
+            </article>
+          </div>
+
+          <div class="filters" aria-label="Shot filters">
+            <div class="filter-field">
+              <label for="result-filter">RESULT</label>
+              <select id="result-filter">
+                <option value="all">All shots</option>
+                <option value="made">Made only</option>
+                <option value="missed">Missed only</option>
+              </select>
+            </div>
+            <div class="filter-field">
+              <label for="range-filter">COURT AREA</label>
+              <select id="range-filter">
+                <option value="all">All areas</option>
+                <option value="rim">At the rim · 0–8 ft</option>
+                <option value="paint">Paint · 8–16 ft</option>
+                <option value="mid">Mid-range · 16 ft to arc</option>
+                <option value="three">Three-point range</option>
+              </select>
+            </div>
+            <div class="filter-field">
+              <label for="period-filter">PERIOD</label>
+              <select id="period-filter">
+                <option value="all">All periods</option>
+                <option value="1">1st quarter</option>
+                <option value="2">2nd quarter</option>
+                <option value="3">3rd quarter</option>
+                <option value="4">4th quarter</option>
+                <option value="5">Overtime</option>
+              </select>
+            </div>
+            <button id="reset-filters" class="reset-button" type="button">Reset filters <span aria-hidden="true">↺</span></button>
+          </div>
+
+          <div class="chart-heading">
+            <div>
+              <p class="eyebrow">SHOT DENSITY</p>
+              <h3>Attempts by court zone</h3>
+            </div>
+            <div class="view-tools">
+              <span id="view-label" class="view-label">3D COURT</span>
+              <button id="view-toggle" class="view-toggle" type="button" aria-pressed="false">Switch to 2D</button>
+              <button id="reset-view" class="icon-button" type="button" aria-label="Reset camera view" title="Reset camera view">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.8 8.5A8 8 0 1 1 4 13M4 5v4h4M12 8v4l3 2" /></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="visual-grid">
+            <div class="court-panel">
+              <div class="court-stage" id="court-stage">
+                <canvas id="court-canvas" role="img" aria-label="Interactive three-dimensional basketball half court. Bar height represents shot attempts and bar color represents field-goal percentage."></canvas>
+                <canvas id="fallback-canvas" role="img" aria-label="Two-dimensional shot zone chart. Select a zone to inspect its values." hidden></canvas>
+                <div id="loading-state" class="loading-state"><span class="loader" aria-hidden="true"></span><span>Loading court data…</span></div>
+                <div id="tooltip" class="tooltip" role="status" aria-live="polite" hidden></div>
+                <div class="orientation-chip"><span class="north-arrow" aria-hidden="true">↓</span> HOOP</div>
+              </div>
+              <div class="chart-caption">
+                <span id="render-status" role="status">Preparing 3D court…</span>
+                <span id="encoding-label">HEIGHT = ATTEMPTS <i class="caption-separator">·</i> COLOR = FG%</span>
+              </div>
+            </div>
+
+            <aside class="legend-panel" aria-label="Chart legend and player details">
+              <div class="legend-block">
+                <p class="legend-title">FIELD GOAL %</p>
+                <div class="color-legend" role="img" aria-label="Color scale: lower field-goal percentage in coral, medium in gold, higher in mint">
+                  <div class="color-ramp"></div>
+                  <div class="legend-ticks"><span>LOW</span><span>HIGH</span></div>
+                </div>
+                <p class="legend-note">Color compares accuracy within the selected player and filters.</p>
+              </div>
+              <div class="legend-block height-legend-block">
+                <p class="legend-title">SHOT VOLUME</p>
+                <div class="height-key" aria-hidden="true"><i></i><i></i><i></i></div>
+                <div class="height-labels"><span>FEWER</span><span>MORE</span></div>
+                <p class="legend-note">Taller columns mean more attempts in a 5 × 5 ft zone.</p>
+              </div>
+              <div class="selected-zone" id="selected-zone-card">
+                <span class="selected-kicker">ZONE INSPECTOR</span>
+                <strong id="selected-title">Select a court zone</strong>
+                <div class="zone-stats">
+                  <div><span>ATTEMPTS</span><b id="selected-attempts">—</b></div>
+                  <div><span>MADE</span><b id="selected-made">—</b></div>
+                  <div><span>FG%</span><b id="selected-fg">—</b></div>
+                </div>
+              </div>
+              <div class="player-note">
+                <span class="player-note-mark" aria-hidden="true">+</span>
+                <p id="data-source">Each bar groups attempts into 5 × 5 ft zones. Shot paths and release height are not part of this dataset.</p>
+              </div>
+            </aside>
+          </div>
+
+          <details class="data-table-details">
+            <summary>Open accessible shot-zone data</summary>
+            <p>Each cell lists attempts and field-goal percentage for that court zone.</p>
+            <div class="data-table-wrap" id="data-table-wrap"></div>
+          </details>
+        </section>
+
+        <footer class="footer">
+          <span>COURTSIDE 3D <i>—</i> SHOT LAB</span>
+          <span>DATA: 2025 REGULAR SEASON <i>·</i> STATIC SITE</span>
+        </footer>
+      </main>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
