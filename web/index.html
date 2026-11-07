@@ -108,7 +108,7 @@
           <div class="chart-heading">
             <div>
               <p class="eyebrow">SHOT DENSITY</p>
-              <h3>Attempts by court zone</h3>
+              <h3>Shooting density across the floor</h3>
             </div>
             <div class="view-tools">
               <span id="view-label" class="view-label">3D COURT</span>
@@ -119,10 +119,36 @@
             </div>
           </div>
 
+          <section class="replay-panel" aria-label="Shot replay controls">
+            <div class="replay-controls">
+              <div class="replay-actions">
+                <button id="replay-play" class="replay-button replay-primary" type="button" aria-label="Play shot replay">Play replay</button>
+                <button id="replay-previous" class="replay-button" type="button" aria-label="Previous shot">Previous</button>
+                <button id="replay-next" class="replay-button" type="button" aria-label="Next shot">Next shot</button>
+              </div>
+              <label class="replay-speed" for="replay-speed">SPEED
+                <select id="replay-speed">
+                  <option value="0.5">0.5×</option>
+                  <option value="1">1×</option>
+                  <option value="2" selected>2×</option>
+                  <option value="4">4×</option>
+                </select>
+              </label>
+              <div class="replay-readout" aria-live="polite" aria-atomic="true">
+                <strong id="replay-counter">0 / 0 SHOTS</strong>
+                <span id="replay-status">Ready · filter the data to choose a replay</span>
+              </div>
+            </div>
+            <div id="replay-progress" class="replay-progress" role="progressbar" aria-label="Shot replay progress" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+              <span id="replay-progress-bar"></span>
+            </div>
+            <p class="replay-note">Shot arcs are simulated, not measured ball paths. The dataset records shot locations, results, period, and clock time. Up to five balls are shown at once.</p>
+          </section>
+
           <div class="visual-grid">
             <div class="court-panel">
               <div class="court-stage" id="court-stage">
-                <canvas id="court-canvas" role="img" aria-label="Interactive three-dimensional basketball half court. Bar height represents shot attempts and bar color represents field-goal percentage."></canvas>
+                <canvas id="court-canvas" role="img" aria-label="Interactive three-dimensional basketball half court. Surface height represents shot density and surface color represents local field-goal percentage."></canvas>
                 <canvas id="fallback-canvas" role="img" aria-label="Two-dimensional shot zone chart. Select a zone to inspect its values." hidden></canvas>
                 <div id="loading-state" class="loading-state"><span class="loader" aria-hidden="true"></span><span>Loading court data…</span></div>
                 <div id="tooltip" class="tooltip" role="status" aria-live="polite" hidden></div>
@@ -130,24 +156,24 @@
               </div>
               <div class="chart-caption">
                 <span id="render-status" role="status">Preparing 3D court…</span>
-                <span id="encoding-label">HEIGHT = ATTEMPTS <i class="caption-separator">·</i> COLOR = FG%</span>
+                <span id="encoding-label">HEIGHT = SHOT DENSITY <i class="caption-separator">·</i> COLOR = LOCAL FG%</span>
               </div>
             </div>
 
             <aside class="legend-panel" aria-label="Chart legend and player details">
               <div class="legend-block">
-                <p class="legend-title">FIELD GOAL %</p>
-                <div class="color-legend" role="img" aria-label="Color scale: lower field-goal percentage in coral, medium in gold, higher in mint">
+                <p class="legend-title">LOCAL FIELD GOAL %</p>
+                <div class="color-legend" role="img" aria-label="Color scale shows local field-goal percentage from low to high">
                   <div class="color-ramp"></div>
-                  <div class="legend-ticks"><span>LOW</span><span>HIGH</span></div>
+                  <div class="legend-ticks" id="fg-ticks"><span>0%</span><span>50%</span><span>100%</span></div>
                 </div>
-                <p class="legend-note">Color compares accuracy within the selected player and filters.</p>
+                <p class="legend-note">Color shows local KDE-smoothed FG%. The scale adjusts to the visible range.</p>
               </div>
               <div class="legend-block height-legend-block">
-                <p class="legend-title">SHOT VOLUME</p>
-                <div class="height-key" aria-hidden="true"><i></i><i></i><i></i></div>
-                <div class="height-labels"><span>FEWER</span><span>MORE</span></div>
-                <p class="legend-note">Taller columns mean more attempts in a 5 × 5 ft zone.</p>
+                <p class="legend-title">SHOT DENSITY</p>
+                <div class="density-ramp" role="img" aria-label="Surface height runs from low density to high density"></div>
+                <div class="legend-ticks"><span>LOW</span><span>HIGH</span></div>
+                <p class="legend-note">Surface height tracks estimated attempts per 25 sq ft.</p>
               </div>
               <div class="selected-zone" id="selected-zone-card">
                 <span class="selected-kicker">ZONE INSPECTOR</span>
@@ -160,7 +186,7 @@
               </div>
               <div class="player-note">
                 <span class="player-note-mark" aria-hidden="true">+</span>
-                <p id="data-source">Each bar groups attempts into 5 × 5 ft zones. Shot paths and release height are not part of this dataset.</p>
+                <p id="data-source">KDE bandwidth: 3.2 ft. The source data has shot locations and outcomes, not ball paths or release height.</p>
               </div>
             </aside>
           </div>
