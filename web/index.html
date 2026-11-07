@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#07110f" />
     <meta name="description" content="Explore basketball shot volume and field-goal percentage in an interactive 3D half court." />
+    <link rel="icon" href="data:," />
     <title>Courtside 3D — Shot Lab</title>
   </head>
   <body>
@@ -26,7 +27,6 @@
           <div class="intro-copy">
             <p class="eyebrow">THE SHOT MAP, REIMAGINED</p>
             <h1 id="page-title">READ THE<br /><span>FLOOR<span class="period">.</span></span></h1>
-            <p class="intro-deck">Every attempt has a place. Explore where the volume builds and where the shots fall.</p>
           </div>
           <div class="intro-aside" aria-hidden="true">
             <span class="aside-index">01 — 02</span>
@@ -43,8 +43,8 @@
             <div class="player-control">
               <label for="player-select">PLAYER</label>
               <select id="player-select" aria-describedby="data-source">
-                <option value="curry">Stephen Curry · NBA</option>
-                <option value="paige">Paige Bueckers · WNBA</option>
+                <option value="curry">Stephen Curry</option>
+                <option value="paige">Paige Bueckers</option>
               </select>
             </div>
           </div>
@@ -107,19 +107,31 @@
 
           <div class="chart-heading">
             <div>
-              <p class="eyebrow">SHOT DENSITY</p>
-              <h3>Shooting density across the floor</h3>
+              <p class="eyebrow" id="chart-eyebrow">SHOT REPLAY</p>
+              <h3 id="chart-title">One shot at a time</h3>
             </div>
             <div class="view-tools">
               <span id="view-label" class="view-label">3D COURT</span>
-              <button id="view-toggle" class="view-toggle" type="button" aria-pressed="false">Switch to 2D</button>
+              <button class="mode-toggle is-active" type="button" data-mode="replay" aria-pressed="true">Replay</button>
+              <button class="mode-toggle" type="button" data-mode="heatmap" aria-pressed="false">Heatmap</button>
+              <button id="view-toggle" class="view-toggle" type="button" aria-pressed="false">2D fallback</button>
               <button id="reset-view" class="icon-button" type="button" aria-label="Reset camera view" title="Reset camera view">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.8 8.5A8 8 0 1 1 4 13M4 5v4h4M12 8v4l3 2" /></svg>
               </button>
             </div>
           </div>
 
-          <section class="replay-panel" aria-label="Shot replay controls">
+          <div class="camera-bar" aria-label="Camera controls">
+            <span>CAMERA</span>
+            <div class="camera-presets" role="group" aria-label="Camera preset">
+              <button type="button" data-camera="broadcast" aria-pressed="true">Broadcast</button>
+              <button type="button" data-camera="behind" aria-pressed="false">Behind hoop</button>
+              <button type="button" data-camera="top" aria-pressed="false">Top-down</button>
+            </div>
+            <label class="inline-toggle" id="follow-control"><input id="replay-follow" type="checkbox" /> Follow shot</label>
+          </div>
+
+          <section id="replay-panel" class="replay-panel" aria-label="Shot replay controls">
             <div class="replay-controls">
               <div class="replay-actions">
                 <button id="replay-play" class="replay-button replay-primary" type="button" aria-label="Play shot replay">Play replay</button>
@@ -134,24 +146,30 @@
                   <option value="4">4×</option>
                 </select>
               </label>
+              <label class="inline-toggle marker-toggle"><input id="replay-markers" type="checkbox" checked /> Keep shot markers</label>
               <div class="replay-readout" aria-live="polite" aria-atomic="true">
                 <strong id="replay-counter">0 / 0 SHOTS</strong>
                 <span id="replay-status">Ready · filter the data to choose a replay</span>
               </div>
             </div>
-            <div id="replay-progress" class="replay-progress" role="progressbar" aria-label="Shot replay progress" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
-              <span id="replay-progress-bar"></span>
-            </div>
+            <label class="sr-only" for="replay-scrubber">Seek to shot</label>
+            <input id="replay-scrubber" class="replay-scrubber" type="range" min="0" max="0" value="0" step="1" aria-valuetext="No shot selected" />
             <p class="replay-note">Shot arcs are simulated, not measured ball paths. The dataset records shot locations, results, period, and clock time. Up to five balls are shown at once.</p>
           </section>
 
           <div class="visual-grid">
             <div class="court-panel">
               <div class="court-stage" id="court-stage">
-                <canvas id="court-canvas" role="img" aria-label="Interactive three-dimensional basketball half court. Surface height represents shot density and surface color represents local field-goal percentage."></canvas>
+                <canvas id="court-canvas" tabindex="0" role="img" aria-label="Interactive three-dimensional basketball shot replay court. Use keyboard arrows for previous and next shot, Space to play or pause, and 1 to 4 to set replay speed."></canvas>
                 <canvas id="fallback-canvas" role="img" aria-label="Two-dimensional shot zone chart. Select a zone to inspect its values." hidden></canvas>
                 <div id="loading-state" class="loading-state"><span class="loader" aria-hidden="true"></span><span>Loading court data…</span></div>
                 <div id="tooltip" class="tooltip" role="status" aria-live="polite" hidden></div>
+                <div id="replay-hud" class="replay-hud" aria-live="polite" aria-atomic="true">
+                  <div class="replay-hud-top"><strong id="hud-counter">0 / 0</strong><span id="hud-game-time">READY · SELECT PLAY</span></div>
+                  <div class="replay-hud-middle"><strong id="hud-result" class="hud-result">READY</strong><span id="hud-shot">DISTANCE — · TYPE —</span></div>
+                  <div id="hud-cumulative" class="replay-hud-bottom">MADE 0 / 0 · FG —</div>
+                </div>
+                <div id="shot-callout" class="shot-callout" hidden></div>
                 <div class="orientation-chip"><span class="north-arrow" aria-hidden="true">↓</span> HOOP</div>
               </div>
               <div class="chart-caption">
@@ -161,7 +179,7 @@
             </div>
 
             <aside class="legend-panel" aria-label="Chart legend and player details">
-              <div class="legend-block">
+              <div class="legend-block" id="fg-legend-block" hidden>
                 <p class="legend-title">LOCAL FIELD GOAL %</p>
                 <div class="color-legend" role="img" aria-label="Color scale shows local field-goal percentage from low to high">
                   <div class="color-ramp"></div>
@@ -169,11 +187,15 @@
                 </div>
                 <p class="legend-note">Color shows local KDE-smoothed FG%. The scale adjusts to the visible range.</p>
               </div>
-              <div class="legend-block height-legend-block">
+              <div class="legend-block height-legend-block" id="heatmap-legend">
                 <p class="legend-title">SHOT DENSITY</p>
                 <div class="density-ramp" role="img" aria-label="Surface height runs from low density to high density"></div>
                 <div class="legend-ticks"><span>LOW</span><span>HIGH</span></div>
-                <p class="legend-note">Surface height tracks estimated attempts per 25 sq ft.</p>
+                <p class="legend-note">A translucent, smoothly faded surface shows shot volume only. FG% appears by zone below.</p>
+              </div>
+              <div class="legend-block replay-legend-block" id="replay-legend">
+                <p class="legend-title">SHOT OUTCOME</p>
+                <p class="legend-note"><span class="outcome-key outcome-made"></span>Made · green floor ring<br /><span class="outcome-key outcome-missed"></span>Missed · red floor ring</p>
               </div>
               <div class="selected-zone" id="selected-zone-card">
                 <span class="selected-kicker">ZONE INSPECTOR</span>

@@ -12,10 +12,10 @@ const GRID = { xMin: -25, xMax: 25, zMin: 0, zMax: 50, cell: 5, cols: 10, rows: 
 const KDE = { cols: 97, rows: 97, xMin: GRID.xMin, xMax: GRID.xMax, zMin: GRID.zMin, zMax: GRID.zMax, bandwidth: 3.2, maxHeight: 12 };
 KDE.stepX = (KDE.xMax - KDE.xMin) / (KDE.cols - 1);
 KDE.stepZ = (KDE.zMax - KDE.zMin) / (KDE.rows - 1);
-const REPLAY = { maxConcurrent: 5, flightMs: 1150, intervalMs: 620, ballRadius: 0.39 };
+const REPLAY = { maxConcurrent: 5, intervalMs: 1200, prelaunchMs: 500, ballRadius: 0.39, maxParticles: 28, trailLength: 9 };
 const PLAYER = {
-  curry: { name: 'Stephen Curry', league: 'NBA', season: '2025', arc: 23.75, csv: curryCsvUrl, color: '#f1c36a' },
-  paige: { name: 'Paige Bueckers', league: 'WNBA', season: '2025', arc: 22.15, csv: paigeCsvUrl, color: '#b7f35c' },
+  curry: { name: 'Stephen Curry', league: 'NBA', season: '2025', arc: 23.75, cornerX: 22, csv: curryCsvUrl, color: '#f1c36a' },
+  paige: { name: 'Paige Bueckers', league: 'WNBA', season: '2025', arc: 22.15, cornerX: 21.67, csv: paigeCsvUrl, color: '#b7f35c' },
 };
 const PALETTE = { low: new THREE.Color('#fa7467'), mid: new THREE.Color('#efbd69'), high: new THREE.Color('#b7f35c') };
 const $ = (selector) => document.querySelector(selector);
@@ -31,11 +31,11 @@ const periodFilter = $('#period-filter');
 const state = {
   player: 'curry', rows: [], bins: [], filtered: [], selectedBin: null,
   fullSurface: null, surface: null, referencePeak: 0,
-  view: '3d', renderer: null, scene: null, camera: null, controls: null,
+  view: '3d', mode: 'replay', renderer: null, scene: null, camera: null, controls: null,
   surfaceMesh: null, arcLines: null, composer: null, bloomPass: null,
   raycaster: new THREE.Raycaster(), pointer: new THREE.Vector2(),
   fallbackReason: '', frame: 0, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
-  replay: { mesh: null, shots: [], active: [], playing: false, cursor: 0, currentIndex: -1, speed: 2, elapsed: 0, nextAt: 0, lastFrame: 0, raf: 0, flashAt: -Infinity, stationary: null, goalLight: null, hoopMaterial: null, flashMesh: null },
+  replay: { mesh: null, shots: [], active: [], playing: false, cursor: 0, currentIndex: -1, speed: 2, elapsed: 0, nextAt: 0, lastFrame: 0, raf: 0, flashAt: -Infinity, flashColor: '#8cff9d', stationary: null, goalLight: null, hoopMaterial: null, hoop: null, netMesh: null, flashMesh: null, trailMesh: null, sourceRings: null, sourceBeams: null, markerMade: null, markerMissed: null, markerMadeCount: 0, markerMissedCount: 0, particleMesh: null, particles: [], particleCursor: 0, markers: [], keepMarkers: true, followShot: false, cameraPreset: 'broadcast', rimShakeAt: -Infinity, netPulseAt: -Infinity },
 };
 const replayTransform = new THREE.Object3D();
 
@@ -67,6 +67,7 @@ function parseCsv(source) {
       clock: item.clock_display_value || '',
       game: item.game_id || '',
       sourceIndex,
+      id: `${item.game_id || 'game'}-${sourceIndex}`,
     };
   }).filter((shot) => Number.isFinite(shot.x) && Number.isFinite(shot.z) && Number.isFinite(shot.distance));
 }
@@ -248,11 +249,61 @@ function hideTooltip() {
 }
 
 function makeLine(points, color, opacity = 1, width = 1) {
-  const geometry = new THREE.BufferGeometry().setFromPoints(points.map(([x, z]) => new THREE.Vector3(x, 0.035, z)));
-  const material = new THREE.LineBasicMaterial({ color, transparent: opacity < 1, opacity, linewidth: width });
-  const line = new THREE.Line(geometry, material);
+  const line = makeCourtStrip(points, color, opacity, 0.2 * width);
   state.scene.add(line);
   return line;
+}
+
+function makeDashedLine(points, color, opacity = 1) {
+  const line = makeCourtStrip(points, color, opacity, 0.12, [0.55, 0.32]);
+  state.scene.add(line);
+  return line;
+}
+
+function makeCourtStrip(points, color, opacity = 1, width = 0.14, dash = null) {
+  const vertices = [];
+  const indices = [];
+  let pathDistance = 0;
+  for (let segment = 0; segment < points.length - 1; segment += 1) {
+    const [x0, z0] = points[segment], [x1, z1] = points[segment + 1];
+    const dx = x1 - x0, dz = z1 - z0;
+    const length = Math.hypot(dx, dz);
+    if (!length) continue;
+    const nx = -dz / length * width / 2, nz = dx / length * width / 2;
+    const sections = [];
+    if (!dash) sections.push([0, length]);
+    else {
+      let cursor = 0;
+      const cycle = dash[0] + dash[1];
+      let phase = (cycle - (pathDistance % cycle)) % cycle;
+      while (cursor < length) {
+        if (phase < dash[0]) {
+          const end = Math.min(length, cursor + dash[0] - phase);
+          sections.push([cursor, end]);
+          cursor = end;
+          phase = dash[0];
+        } else {
+          const step = Math.min(length - cursor, cycle - phase);
+          cursor += step;
+          phase = 0;
+        }
+      }
+    }
+    for (const [start, end] of sections) {
+      if (end - start < 0.035) continue;
+      const ax = x0 + dx * start / length, az = z0 + dz * start / length;
+      const bx = x0 + dx * end / length, bz = z0 + dz * end / length;
+      const base = vertices.length / 3;
+      vertices.push(ax + nx, 0.045, az + nz, ax - nx, 0.045, az - nz, bx + nx, 0.045, bz + nz, bx - nx, 0.045, bz - nz);
+      indices.push(base, base + 1, base + 2, base + 2, base + 1, base + 3);
+    }
+    pathDistance += length;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color, transparent: opacity < 1, opacity, side: THREE.DoubleSide, toneMapped: false }));
 }
 
 function makeArc(radius, start, end, segments = 64, centerX = 0, centerZ = 0) {
@@ -289,150 +340,186 @@ function makeBasketballTexture() {
   return texture;
 }
 
-function createReplayBallInstances() {
-  const geometry = new THREE.SphereGeometry(REPLAY.ballRadius, 28, 20);
-  const texture = makeBasketballTexture();
-  const material = new THREE.MeshBasicMaterial({ map: texture, toneMapped: false });
-  const mesh = new THREE.InstancedMesh(geometry, material, REPLAY.maxConcurrent);
+function makeInstancePool(geometry, material, capacity) {
+  const mesh = new THREE.InstancedMesh(geometry, material, capacity);
   mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   mesh.frustumCulled = false;
-  for (let slot = 0; slot < REPLAY.maxConcurrent; slot += 1) {
+  for (let slot = 0; slot < capacity; slot += 1) {
     replayTransform.position.set(0, -100, 0);
+    replayTransform.rotation.set(0, 0, 0);
     replayTransform.scale.setScalar(0);
     replayTransform.updateMatrix();
     mesh.setMatrixAt(slot, replayTransform.matrix);
   }
   state.scene.add(mesh);
-  state.replay.mesh = mesh;
+  return mesh;
 }
 
-function setReplayBall(slot, position, rotationY = 0) {
-  const mesh = state.replay.mesh;
+function writeInstance(mesh, slot, position, scale, rotation = null, color = null) {
   if (!mesh) return;
   if (!position) {
     replayTransform.position.set(0, -100, 0);
-    replayTransform.scale.setScalar(0);
     replayTransform.rotation.set(0, 0, 0);
+    replayTransform.scale.setScalar(0);
   } else {
     replayTransform.position.copy(position);
-    replayTransform.scale.setScalar(1);
-    replayTransform.rotation.set(rotationY * 0.7, rotationY, rotationY * 0.35);
+    replayTransform.scale.copy(scale);
+    if (rotation) replayTransform.rotation.copy(rotation);
+    else replayTransform.rotation.set(0, 0, 0);
   }
   replayTransform.updateMatrix();
   mesh.setMatrixAt(slot, replayTransform.matrix);
+  if (color && mesh.setColorAt) mesh.setColorAt(slot, color);
   mesh.instanceMatrix.needsUpdate = true;
+  if (color && mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+}
+
+function createReplayBallInstances() {
+  const geometry = new THREE.SphereGeometry(REPLAY.ballRadius, 28, 20);
+  const texture = makeBasketballTexture();
+  const material = new THREE.MeshBasicMaterial({ map: texture, toneMapped: false });
+  state.replay.mesh = makeInstancePool(geometry, material, REPLAY.maxConcurrent);
+  state.replay.sourceRings = makeInstancePool(
+    new THREE.TorusGeometry(0.44, 0.045, 6, 22),
+    new THREE.MeshBasicMaterial({ color: '#ffffff', vertexColors: true, transparent: true, opacity: 0.86, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }),
+    REPLAY.maxConcurrent,
+  );
+  state.replay.sourceBeams = makeInstancePool(
+    new THREE.CylinderGeometry(0.018, 0.018, 1, 6),
+    new THREE.MeshBasicMaterial({ color: '#ffffff', vertexColors: true, transparent: true, opacity: 0.45, depthWrite: false, toneMapped: false }),
+    REPLAY.maxConcurrent,
+  );
+  state.replay.trailMesh = makeInstancePool(
+    new THREE.SphereGeometry(0.075, 8, 6),
+    new THREE.MeshBasicMaterial({ color: '#f2a34a', transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }),
+    REPLAY.maxConcurrent * REPLAY.trailLength,
+  );
+  const markerCapacity = 1600;
+  const markerGeometry = new THREE.RingGeometry(0.2, 0.4, 22);
+  const markerMaterial = new THREE.MeshBasicMaterial({ color: '#9dff8c', transparent: true, opacity: 0.62, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false });
+  state.replay.markerMade = makeInstancePool(markerGeometry, markerMaterial, markerCapacity);
+  state.replay.markerMissed = makeInstancePool(
+    markerGeometry,
+    new THREE.MeshBasicMaterial({ color: '#ff7868', transparent: true, opacity: 0.38, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }),
+    markerCapacity,
+  );
+  state.replay.particleMesh = makeInstancePool(
+    new THREE.SphereGeometry(0.08, 8, 6),
+    new THREE.MeshBasicMaterial({ color: '#ffffff', vertexColors: true, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }),
+    REPLAY.maxParticles,
+  );
+  state.replay.particles = Array(REPLAY.maxParticles).fill(null);
+}
+
+function setReplayBall(slot, position, rotationY = 0) {
+  writeInstance(state.replay.mesh, slot, position, new THREE.Vector3(1, 1, 1), new THREE.Euler(rotationY * 0.7, rotationY, rotationY * 0.35));
 }
 
 function buildCourt() {
   state.scene = new THREE.Scene();
   state.scene.background = new THREE.Color('#070b10');
-  state.scene.fog = new THREE.Fog('#070b10', 76, 150);
-  state.scene.add(new THREE.HemisphereLight('#8297a0', '#11181d', 0.62));
-  const fill = new THREE.DirectionalLight('#7e9ca3', 0.42);
-  fill.position.set(22, 26, 38);
+  state.scene.fog = new THREE.Fog('#070b10', 112, 220);
+  state.scene.add(new THREE.HemisphereLight('#9aabb1', '#21170f', 0.7));
+  const fill = new THREE.DirectionalLight('#8aa5aa', 0.48);
+  fill.position.set(-24, 32, 46);
   state.scene.add(fill);
 
   for (const [x, z, color] of [[-16, 14, '#ffe2b0'], [0, 20, '#fff0cb'], [16, 14, '#ffe2b0']]) {
     const target = new THREE.Object3D();
     target.position.set(0, 0, 18.75);
     state.scene.add(target);
-    const spotlight = new THREE.SpotLight(color, 300, 105, Math.PI / 5.4, 0.72, 2);
-    spotlight.position.set(x, 31, z);
+    const spotlight = new THREE.SpotLight(color, 220, 118, Math.PI / 5.4, 0.72, 2);
+    spotlight.position.set(x, 32, z);
     spotlight.target = target;
     state.scene.add(spotlight);
-    const fixture = new THREE.Mesh(new THREE.SphereGeometry(0.48, 12, 8), new THREE.MeshBasicMaterial({ color: '#ffe5b5', toneMapped: false }));
-    fixture.position.set(x, 31.3, z);
-    state.scene.add(fixture);
   }
-  state.replay.goalLight = new THREE.PointLight('#ffbd72', 22, 24, 2);
-  state.replay.goalLight.position.set(0, 3.5, 0.5);
+  state.replay.goalLight = new THREE.PointLight('#ffbd72', 18, 26, 2);
+  state.replay.goalLight.position.set(0, 12.5, 0.5);
   state.scene.add(state.replay.goalLight);
 
   const floor = new THREE.Mesh(new THREE.BoxGeometry(180, 0.5, 180), new THREE.MeshStandardMaterial({ color: '#11171b', roughness: 0.96 }));
   floor.position.set(0, -0.55, 20);
   state.scene.add(floor);
-  const court = new THREE.Mesh(new THREE.BoxGeometry(50, 0.16, 55.5), new THREE.MeshStandardMaterial({ color: '#91613a', emissive: '#281306', emissiveIntensity: 0.32, roughness: 0.62, metalness: 0.01 }));
-  court.position.set(0, -0.22, 22.5);
+  const court = new THREE.Mesh(new THREE.BoxGeometry(50, 0.16, 47), new THREE.MeshStandardMaterial({ color: '#91613a', emissive: '#281306', emissiveIntensity: 0.32, roughness: 0.62, metalness: 0.01 }));
+  court.position.set(0, -0.22, 18.75);
   state.scene.add(court);
-  const plankDepth = 55.5 / 13;
+  const plankDepth = 47 / 13;
   for (let index = 0; index < 13; index += 1) {
     const plank = new THREE.Mesh(
       new THREE.BoxGeometry(49.88, 0.012, plankDepth - 0.045),
       new THREE.MeshStandardMaterial({ color: '#b17a4d', emissive: '#47240e', emissiveIntensity: 0.24, roughness: 0.58, metalness: 0.01 }),
     );
-    plank.position.set(0, -0.135, -5.25 + plankDepth * (index + 0.5));
+    plank.position.set(0, -0.135, -4.75 + plankDepth * (index + 0.5));
     state.scene.add(plank);
   }
 
-  const line = '#d1caa8';
-  const faint = '#caa57d';
+  const line = '#eef0d1';
+  const faint = '#c6ad84';
   const x0 = -25, x1 = 25, z0 = -4.75, z1 = 42.25;
-  makeLine([[x0,z0],[x1,z0],[x1,z1],[x0,z1],[x0,z0]], line, 0.88);
-  makeLine([[-8,z0],[-8,10.25],[8,10.25],[8,z0]], line, 0.8);
-  makeLine([[-6,z0],[-6,10.25],[6,10.25],[6,z0]], faint, 0.45);
-  makeLine(makeArc(6, 0, Math.PI, 48, 0, 10.25), line, 0.8);
-  makeLine(makeArc(6, Math.PI, Math.PI * 2, 48, 0, 10.25), line, 0.45);
-  makeLine(makeArc(4, 0, Math.PI, 48, 0, 0), line, 0.76);
+  makeLine([[x0,z0],[x1,z0],[x1,z1],[x0,z1],[x0,z0]], line, 0.9);
+  makeLine([[-8,z0],[-8,10.25],[8,10.25],[8,z0]], line, 0.86);
+  makeLine(makeArc(6, 0, Math.PI, 48, 0, 10.25), line, 0.82);
+  makeDashedLine(makeArc(6, Math.PI, Math.PI * 2, 48, 0, 10.25), faint, 0.62);
+  makeLine(makeArc(4, 0, Math.PI, 48, 0, 0), line, 0.8);
   drawThreePointArc();
-  makeLine([[-25,42.25],[25,42.25]], faint, 0.45);
-  makeLine(makeArc(6, 0, Math.PI * 2, 54, 0, 0), '#e6dba9', 0.62);
-  makeLine([[-3,-1.7],[3,-1.7]], '#e6dba9', 0.75, 2);
-  const hoopMaterial = new THREE.MeshStandardMaterial({ color: '#f0b965', emissive: '#583813', emissiveIntensity: 0.45, roughness: 0.42 });
-  const hoop = new THREE.Mesh(new THREE.TorusGeometry(0.75, 0.08, 8, 32), hoopMaterial);
+  makeLine(makeArc(6, Math.PI, Math.PI * 2, 54, 0, 42.25), faint, 0.66);
+
+  const hoopMaterial = new THREE.MeshStandardMaterial({ color: '#ff8a32', emissive: '#e95a0b', emissiveIntensity: 0.85, roughness: 0.42, toneMapped: false });
+  const hoop = new THREE.Mesh(new THREE.TorusGeometry(0.75, 0.08, 8, 40), hoopMaterial);
   hoop.rotation.x = Math.PI / 2;
-  hoop.position.set(0, 0.32, 0);
+  hoop.position.set(0, 10, 0);
   state.scene.add(hoop);
   state.replay.hoopMaterial = hoopMaterial;
+  state.replay.hoop = hoop;
   const net = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.62, 0.34, 0.95, 16, 4, true),
-    new THREE.MeshBasicMaterial({ color: '#e5e1d2', wireframe: true, transparent: true, opacity: 0.5 }),
+    new THREE.CylinderGeometry(0.62, 0.34, 1.25, 18, 5, true),
+    new THREE.MeshBasicMaterial({ color: '#f0eddf', wireframe: true, transparent: true, opacity: 0.64, toneMapped: false }),
   );
-  net.position.set(0, -0.16, 0);
+  net.position.set(0, 9.38, 0);
   state.scene.add(net);
-  const board = new THREE.Mesh(new THREE.BoxGeometry(6, 1.5, 0.18), new THREE.MeshStandardMaterial({ color: '#d7decb', roughness: 0.5, metalness: 0.12 }));
-  board.position.set(0, 1.3, -1.3);
+  state.replay.netMesh = net;
+  const board = new THREE.Mesh(new THREE.BoxGeometry(6, 3.5, 0.16), new THREE.MeshPhysicalMaterial({ color: '#c9e5dc', transparent: true, opacity: 0.22, roughness: 0.2, metalness: 0.08, side: THREE.DoubleSide }));
+  board.position.set(0, 10.75, -1.35);
   state.scene.add(board);
-  const targetSquare = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.85, 0.035), new THREE.MeshBasicMaterial({ color: '#acb9a9', wireframe: true, transparent: true, opacity: 0.75 }));
-  targetSquare.position.set(0, 0.75, -1.19);
+  const boardFrame = new THREE.LineSegments(
+    new THREE.EdgesGeometry(board.geometry),
+    new THREE.LineBasicMaterial({ color: '#d9f2ec', transparent: true, opacity: 0.92, toneMapped: false }),
+  );
+  boardFrame.position.copy(board.position);
+  state.scene.add(boardFrame);
+  const targetSquare = new THREE.Mesh(new THREE.BoxGeometry(1.9, 1.25, 0.035), new THREE.MeshBasicMaterial({ color: '#e6ebd5', wireframe: true, transparent: true, opacity: 0.84, toneMapped: false }));
+  targetSquare.position.set(0, 10.2, -1.24);
   state.scene.add(targetSquare);
-  const support = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.2, 3.2, 10), new THREE.MeshStandardMaterial({ color: '#28333a', metalness: 0.72, roughness: 0.38 }));
-  support.position.set(0, 1.35, -3.05);
+  const support = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.2, 10, 10), new THREE.MeshStandardMaterial({ color: '#28333a', metalness: 0.72, roughness: 0.38 }));
+  support.position.set(0, 5, -3.05);
   state.scene.add(support);
   const supportArm = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 1.8), new THREE.MeshStandardMaterial({ color: '#364148', metalness: 0.7, roughness: 0.4 }));
-  supportArm.position.set(0, 2.75, -2.35);
+  supportArm.position.set(0, 10.1, -2.35);
   state.scene.add(supportArm);
-  const flashMaterial = new THREE.MeshBasicMaterial({ color: '#fff0a6', transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
-  const flashMesh = new THREE.Mesh(new THREE.TorusGeometry(0.78, 0.045, 8, 36), flashMaterial);
+  const flashMaterial = new THREE.MeshBasicMaterial({ color: '#8cff9d', transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+  const flashMesh = new THREE.Mesh(new THREE.TorusGeometry(0.82, 0.05, 8, 40), flashMaterial);
   flashMesh.rotation.x = Math.PI / 2;
-  flashMesh.position.set(0, 0.39, 0);
+  flashMesh.position.set(0, 10.08, 0);
   state.scene.add(flashMesh);
   state.replay.flashMesh = flashMesh;
   createReplayBallInstances();
 
-  for (let i = 0; i <= GRID.cols; i += 1) {
-    const x = GRID.xMin + i * GRID.cell;
-    makeLine([[x,0],[x,GRID.zMax]], faint, 0.13);
-  }
-  for (let i = 0; i <= GRID.rows; i += 1) {
-    const z = GRID.zMin + i * GRID.cell;
-    makeLine([[GRID.xMin,z],[GRID.xMax,z]], faint, 0.10);
-  }
-
-  state.camera = new THREE.PerspectiveCamera(37, 1, 0.1, 220);
-  state.camera.position.set(36, 43, -43);
-  state.camera.lookAt(0, 0, 19);
+  state.camera = new THREE.PerspectiveCamera(46, 1, 0.1, 240);
   state.controls = new OrbitControls(state.camera, canvas);
-  state.controls.target.set(0, 0, 19);
   state.controls.enablePan = false;
   state.controls.enableDamping = !state.reducedMotion;
   state.controls.dampingFactor = 0.08;
-  state.controls.minDistance = 39;
-  state.controls.maxDistance = 112;
-  state.controls.minPolarAngle = 0.34;
-  state.controls.maxPolarAngle = 1.36;
-  state.controls.minAzimuthAngle = -2.65;
-  state.controls.maxAzimuthAngle = 2.65;
-  state.controls.addEventListener('change', scheduleRender);
+  state.controls.minDistance = 34;
+  state.controls.maxDistance = 142;
+  state.controls.minPolarAngle = 0.12;
+  state.controls.maxPolarAngle = Math.PI / 2 - 0.025;
+  state.controls.minAzimuthAngle = -Math.PI;
+  state.controls.maxAzimuthAngle = Math.PI;
+  state.controls.addEventListener('change', () => {
+    updateCallout(state.replay.stationary || state.replay.active[0]?.shot);
+    scheduleRender();
+  });
+  applyCameraPreset('broadcast', true);
 }
 
 function drawThreePointArc() {
@@ -440,13 +527,11 @@ function drawThreePointArc() {
     state.scene.remove(state.arcLines);
     state.arcLines.traverse((item) => { item.geometry?.dispose(); item.material?.dispose(); });
   }
-  const { arc } = PLAYER[state.player];
-  const corner = state.player === 'curry' ? 22 : 21.65;
+  const { arc, cornerX: corner } = PLAYER[state.player];
   const cornerZ = Math.sqrt(Math.max(0, arc ** 2 - corner ** 2));
   const group = new THREE.Group();
   const addLine = (points) => {
-    const geometry = new THREE.BufferGeometry().setFromPoints(points.map(([x, z]) => new THREE.Vector3(x, 0.035, z)));
-    group.add(new THREE.Line(geometry, new THREE.LineBasicMaterial({ color: '#d1caa8', transparent: true, opacity: 0.82 })));
+    group.add(makeCourtStrip(points, '#d1caa8', 0.9, 0.2));
   };
   addLine([[-corner, -4.75], [-corner, cornerZ]]);
   addLine([[corner, -4.75], [corner, cornerZ]]);
@@ -456,8 +541,31 @@ function drawThreePointArc() {
   state.arcLines = group;
 }
 
+function applyCameraPreset(name, initial = false) {
+  if (!state.camera || !state.controls) return;
+  const presets = {
+    broadcast: { position: new THREE.Vector3(-48, 72, 66), target: new THREE.Vector3(0, 8, 0), up: new THREE.Vector3(0, 1, 0) },
+    behind: { position: new THREE.Vector3(0, 24, -36), target: new THREE.Vector3(0, 9, 20), up: new THREE.Vector3(0, 1, 0) },
+    top: { position: new THREE.Vector3(0, 86, 19), target: new THREE.Vector3(0, 0, 19), up: new THREE.Vector3(0, 0, 1) },
+  };
+  const preset = presets[name] || presets.broadcast;
+  state.replay.cameraPreset = name in presets ? name : 'broadcast';
+  state.camera.up.copy(preset.up);
+  state.controls.target.copy(preset.target);
+  state.camera.position.copy(preset.position);
+  state.camera.lookAt(preset.target);
+  state.controls.update();
+  state.controls.saveState();
+  for (const button of document.querySelectorAll('[data-camera]')) {
+    const active = button.dataset.camera === state.replay.cameraPreset;
+    button.setAttribute('aria-pressed', String(active));
+  }
+  updateCallout(state.replay.stationary);
+  if (!initial) render3d();
+}
+
 function scheduleRender() {
-  if (state.frame || !state.renderer || state.view !== '3d') return;
+  if (state.frame || !state.renderer || state.view !== '3d' || document.hidden) return;
   state.frame = requestAnimationFrame(() => {
     state.frame = 0;
     state.controls?.update();
@@ -466,7 +574,7 @@ function scheduleRender() {
 }
 
 function render3d() {
-  if (state.composer && state.scene && state.camera && state.view === '3d') state.composer.render();
+  if (state.composer && state.scene && state.camera && state.view === '3d' && !document.hidden) state.composer.render();
 }
 
 function drawSurface(surface) {
@@ -479,22 +587,29 @@ function drawSurface(surface) {
   if (!surface || surface.maxDensity <= 0 || state.referencePeak <= 0) { render3d(); return; }
 
   const positions = new Float32Array(KDE.cols * KDE.rows * 3);
-  const colors = new Float32Array(KDE.cols * KDE.rows * 3);
+  const colors = new Float32Array(KDE.cols * KDE.rows * 4);
   const maxHeight = KDE.maxHeight;
-  const lowCut = surface.maxDensity * 0.008;
+  const lowCut = surface.maxDensity * 0.001;
+  const heatLow = new THREE.Color('#174c68');
+  const heatHigh = new THREE.Color('#91e4d0');
   for (let z = 0; z < KDE.rows; z += 1) {
     for (let x = 0; x < KDE.cols; x += 1) {
       const index = z * KDE.cols + x;
       const density = surface.density[index];
       const height = Math.min(maxHeight, (density / state.referencePeak) * maxHeight);
-      const color = colorAt(surface.fg[index], surface.colorMin, surface.colorMax);
-      const offset = index * 3;
+      const relativeDensity = density / state.referencePeak;
+      const edge = THREE.MathUtils.smoothstep(relativeDensity, 0.002, 0.09);
+      const color = state.mode === 'heatmap'
+        ? heatLow.clone().lerp(heatHigh, THREE.MathUtils.clamp(relativeDensity, 0, 1))
+        : colorAt(surface.fg[index], surface.colorMin, surface.colorMax);
+      const offset = index * 4;
       positions[offset] = KDE.xMin + x * KDE.stepX;
       positions[offset + 1] = 0.08 + height;
       positions[offset + 2] = KDE.zMin + z * KDE.stepZ;
       colors[offset] = color.r;
       colors[offset + 1] = color.g;
       colors[offset + 2] = color.b;
+      colors[offset + 3] = edge * 0.82;
     }
   }
   const indices = [];
@@ -513,17 +628,18 @@ function drawSurface(surface) {
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 4));
   geometry.setIndex(indices);
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
   const material = new THREE.MeshBasicMaterial({
-    vertexColors: true, side: THREE.DoubleSide, transparent: true, opacity: 0.78,
+    vertexColors: true, side: THREE.DoubleSide, transparent: true, opacity: state.mode === 'heatmap' ? 0.72 : 0.78,
     depthWrite: false, toneMapped: false,
   });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.userData.surface = surface;
   mesh.userData.threshold = lowCut;
+  mesh.visible = state.mode === 'heatmap';
   state.scene.add(mesh);
   state.surfaceMesh = mesh;
   render3d();
@@ -536,6 +652,7 @@ function fitRenderer() {
   if (!state.renderer) return;
   state.composer?.setSize(rect.width, rect.height);
   state.camera.aspect = rect.width / rect.height;
+  state.camera.fov = rect.width < 700 ? 54 : 46;
   state.camera.updateProjectionMatrix();
   render3d();
 }
@@ -546,21 +663,31 @@ function init3d() {
     else fitRenderer();
   });
   observer.observe(stage);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (state.replay.raf) cancelAnimationFrame(state.replay.raf);
+      state.replay.raf = 0;
+      if (state.frame) cancelAnimationFrame(state.frame);
+      state.frame = 0;
+      state.replay.lastFrame = 0;
+    } else if (state.replay.playing) scheduleReplayFrame();
+    else render3d();
+  });
   window.addEventListener('resize', () => {
     if (state.view === '2d') drawFallbackCourt();
     else fitRenderer();
   }, { passive: true });
   try {
     state.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'low-power' });
-    state.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.3));
+    state.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     state.renderer.outputColorSpace = THREE.SRGBColorSpace;
     state.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     state.renderer.toneMappingExposure = 1.12;
     buildCourt();
     state.composer = new EffectComposer(state.renderer);
-    state.composer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.3));
+    state.composer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     state.composer.addPass(new RenderPass(state.scene, state.camera));
-    state.bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.5, 0.5, 0.7);
+    state.bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.22, 0.34, 0.9);
     state.composer.addPass(state.bloomPass);
     state.composer.addPass(new OutputPass());
     canvas.addEventListener('pointermove', onScenePointerMove);
@@ -589,7 +716,7 @@ function sampleSurface(x, z) {
 }
 
 function pickSurface(event) {
-  if (!state.renderer || !state.surfaceMesh || !state.surfaceMesh.geometry.index) return null;
+  if (state.mode !== 'heatmap' || !state.renderer || !state.surfaceMesh || !state.surfaceMesh.geometry.index) return null;
   const rect = canvas.getBoundingClientRect();
   state.pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
   state.raycaster.setFromCamera(state.pointer, state.camera);
@@ -659,7 +786,7 @@ function drawFallbackCourt() {
   ctx.strokeRect(keyX, top + fieldH - fieldH * (15 / GRID.zMax), keyW, fieldH * (15 / GRID.zMax));
   ctx.beginPath(); ctx.arc(left + fieldW / 2, top + fieldH, fieldW * (4 / 50) / 2, Math.PI, Math.PI * 2); ctx.stroke();
   const arc = PLAYER[state.player].arc;
-  const corner = state.player === 'curry' ? 22 : 21.65;
+  const { cornerX: corner } = PLAYER[state.player];
   const cornerZ = Math.sqrt(Math.max(0, arc ** 2 - corner ** 2));
   const cornerAngle = Math.asin(cornerZ / arc);
   ctx.beginPath();
@@ -706,13 +833,19 @@ function switchView(view, message = '') {
   }
   canvas.hidden = is2d;
   fallbackCanvas.hidden = !is2d;
-  $('#view-toggle').textContent = is2d ? 'Switch to 3D' : 'Switch to 2D';
+  $('#view-toggle').textContent = is2d ? 'Return to 3D' : '2D fallback';
   $('#view-toggle').setAttribute('aria-pressed', String(is2d));
-  $('#view-label').textContent = is2d ? '2D FALLBACK' : '3D COURT';
+  $('#view-label').textContent = is2d ? '2D FALLBACK' : (state.mode === 'heatmap' ? 'HEATMAP' : 'SHOT REPLAY');
   $('#encoding-label').innerHTML = is2d
-    ? 'HUE = LOCAL FG% <i class="caption-separator">·</i> INTENSITY = DENSITY'
-    : 'HEIGHT = SHOT DENSITY <i class="caption-separator">·</i> COLOR = LOCAL FG%';
-  $('#render-status').textContent = message || (is2d ? '2D density map · tap a location for local values' : 'Drag to orbit · scroll to zoom · select the surface for local values');
+    ? '2D FALLBACK <i class="caption-separator">·</i> DENSITY + FG% BY ZONE'
+    : state.mode === 'heatmap'
+      ? 'HEIGHT = SHOT DENSITY <i class="caption-separator">·</i> COLOR = SHOT VOLUME'
+      : 'SHOT ORIGIN + OUTCOME <i class="caption-separator">·</i> BALL PATH IS SIMULATED';
+  $('#render-status').textContent = message || (is2d ? '2D court map · tap a location for local values' : (state.mode === 'heatmap' ? 'Heatmap · height and hue show shot density; FG% remains in zone values.' : 'Shot replay · use Play, Next, or drag the timeline.'));
+  $('#replay-hud').hidden = state.mode !== 'replay' || is2d;
+  $('#replay-panel').hidden = state.mode !== 'replay';
+  if (state.surfaceMesh) state.surfaceMesh.visible = !is2d && state.mode === 'heatmap';
+  for (const mesh of [state.replay.markerMade, state.replay.markerMissed]) if (mesh) mesh.visible = !is2d && state.mode === 'replay' && state.replay.keepMarkers;
   updateReplayControls();
   if (is2d) {
     tooltip.hidden = true;
@@ -721,6 +854,42 @@ function switchView(view, message = '') {
     fitRenderer();
     render3d();
   }
+}
+
+function setMode(mode) {
+  state.mode = mode === 'heatmap' ? 'heatmap' : 'replay';
+  if (state.mode === 'heatmap') {
+    pauseReplay(false);
+    clearReplayBalls();
+  }
+  for (const button of document.querySelectorAll('[data-mode]')) {
+    const active = button.dataset.mode === state.mode;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', String(active));
+  }
+  $('#view-label').textContent = state.view === '2d' ? '2D FALLBACK' : (state.mode === 'heatmap' ? 'HEATMAP' : 'SHOT REPLAY');
+  $('#encoding-label').innerHTML = state.mode === 'heatmap'
+    ? 'HEIGHT = SHOT DENSITY <i class="caption-separator">·</i> COLOR = SHOT VOLUME'
+    : 'SHOT ORIGIN + OUTCOME <i class="caption-separator">·</i> BALL PATH IS SIMULATED';
+  $('#chart-eyebrow').textContent = state.mode === 'heatmap' ? 'SHOT HEATMAP' : 'SHOT REPLAY';
+  $('#chart-title').textContent = state.mode === 'heatmap' ? 'Where shots were taken' : 'One shot at a time';
+  $('#data-source').textContent = state.mode === 'heatmap'
+    ? 'A 3.2 ft Gaussian KDE estimates shot volume from recorded locations. FG% is listed per zone.'
+    : 'Shot locations and results come from the dataset. Release height and the animated arc are simulated.';
+  $('#render-status').textContent = state.mode === 'heatmap'
+    ? 'Heatmap · height and hue show shot density; FG% remains in zone values.'
+    : 'Shot replay · use Play, Next, or drag the timeline.';
+  if (state.surfaceMesh) state.surfaceMesh.visible = state.view === '3d' && state.mode === 'heatmap';
+  for (const mesh of [state.replay.markerMade, state.replay.markerMissed]) if (mesh) mesh.visible = state.view === '3d' && state.mode === 'replay' && state.replay.keepMarkers;
+  $('#fg-legend-block').hidden = true;
+  $('#heatmap-legend').hidden = state.mode !== 'heatmap';
+  $('#replay-legend').hidden = state.mode !== 'replay';
+  $('#replay-panel').hidden = state.mode !== 'replay';
+  $('#follow-control').hidden = state.mode === 'heatmap';
+  $('#replay-hud').hidden = state.mode !== 'replay' || state.view !== '3d';
+  updateReplayControls();
+  if (state.view === '2d') drawFallbackCourt();
+  render3d();
 }
 
 function renderData() {
@@ -743,7 +912,9 @@ function renderData() {
   }
   $('#render-status').textContent = state.view === '2d'
     ? '2D density map · tap a location for local values'
-    : 'Drag to orbit · scroll to zoom · select the surface for local values';
+    : state.mode === 'heatmap'
+      ? 'Heatmap · height and hue show shot density; FG% remains in zone values.'
+      : 'Shot replay · use Play, Next, or drag the timeline.';
 }
 
 function secondsRemaining(clock) {
@@ -753,9 +924,11 @@ function secondsRemaining(clock) {
 
 function orderedReplayShots(shots) {
   const gameOrder = new Map();
-  for (const shot of shots) {
-    if (!gameOrder.has(shot.game)) gameOrder.set(shot.game, gameOrder.size);
-  }
+  const games = [...new Set(shots.map((shot) => shot.game))];
+  const numericGameIds = games.every((game) => /^\d+$/.test(game));
+  if (numericGameIds) games.sort((a, b) => Number(a) - Number(b));
+  else games.sort((a, b) => Math.min(...shots.filter((shot) => shot.game === a).map((shot) => shot.sourceIndex)) - Math.min(...shots.filter((shot) => shot.game === b).map((shot) => shot.sourceIndex)));
+  games.forEach((game, index) => gameOrder.set(game, index));
   return shots.map((shot) => ({ ...shot, gameOrder: gameOrder.get(shot.game) }))
     .sort((a, b) => {
       if (a.gameOrder !== b.gameOrder) return a.gameOrder - b.gameOrder;
@@ -769,48 +942,94 @@ function orderedReplayShots(shots) {
 }
 
 function replayShotLabel(shot) {
-  const game = String(shot.gameOrder + 1).padStart(2, '0');
   const period = Number.isFinite(shot.period) ? `Q${shot.period}` : 'PERIOD N/A';
-  const time = shot.clock || 'TIME N/A';
-  return `GAME ${game} · ${period} · ${time} · ${shot.made ? 'MADE' : 'MISSED'}`;
+  return `GAME ${shot.game || String(shot.gameOrder + 1).padStart(2, '0')} · ${period} · ${shot.clock || 'TIME N/A'} · ${shot.made ? 'MADE' : 'MISSED'}`;
+}
+
+function updateReplayHUD() {
+  const replay = state.replay;
+  const index = replay.currentIndex;
+  const shot = index >= 0 ? replay.shots[index] : null;
+  const count = replay.shots.length;
+  const made = shot ? replay.shots.slice(0, index + 1).reduce((total, item) => total + Number(item.made), 0) : 0;
+  const attempts = shot ? index + 1 : 0;
+  const fg = attempts ? `${(made * 100 / attempts).toFixed(1)}%` : '—';
+  $('#hud-counter').textContent = `${shot ? index + 1 : 0} / ${count.toLocaleString()}`;
+  $('#hud-game-time').textContent = shot ? replayShotLabel(shot) : 'READY · SELECT PLAY';
+  $('#hud-result').textContent = shot ? (shot.made ? 'MADE' : 'MISSED') : 'READY';
+  $('#hud-result').classList.toggle('is-made', !!shot?.made);
+  $('#hud-result').classList.toggle('is-missed', !!shot && !shot.made);
+  $('#hud-shot').textContent = shot ? `${shot.distance.toFixed(1)} FT · ${shot.type}` : 'DISTANCE — · TYPE —';
+  $('#hud-cumulative').textContent = `MADE ${made.toLocaleString()} / ${attempts.toLocaleString()} · FG ${fg}`;
+  $('#replay-hud').hidden = state.mode !== 'replay' || state.view !== '3d';
 }
 
 function updateReplayControls() {
   const replay = state.replay;
   const count = replay.shots.length;
-  const displayedIndex = replay.currentIndex;
+  const index = replay.currentIndex;
+  const usable = state.view === '3d' && state.mode === 'replay' && count > 0;
   $('#replay-play').textContent = replay.playing ? 'Pause replay' : 'Play replay';
   $('#replay-play').setAttribute('aria-label', replay.playing ? 'Pause shot replay' : 'Play shot replay');
-  $('#replay-play').disabled = state.reducedMotion || state.view !== '3d' || !count;
-  $('#replay-previous').disabled = state.view !== '3d' || !count;
-  $('#replay-next').disabled = state.view !== '3d' || !count;
+  $('#replay-play').disabled = state.reducedMotion || !usable;
+  $('#replay-previous').disabled = !usable;
+  $('#replay-next').disabled = !usable;
   $('#replay-speed').disabled = !count;
-  $('#replay-counter').textContent = `${displayedIndex >= 0 ? displayedIndex + 1 : 0} / ${count.toLocaleString()} SHOTS`;
-  const label = displayedIndex >= 0 ? replayShotLabel(replay.shots[displayedIndex]) : '';
+  $('#replay-scrubber').disabled = !usable;
+  $('#replay-scrubber').max = String(Math.max(0, count - 1));
+  $('#replay-scrubber').value = String(Math.max(0, index));
+  $('#replay-scrubber').setAttribute('aria-valuetext', index >= 0 ? replayShotLabel(replay.shots[index]) : 'No shot selected');
+  $('#replay-counter').textContent = `${index >= 0 ? index + 1 : 0} / ${count.toLocaleString()} SHOTS`;
+  const label = index >= 0 ? replayShotLabel(replay.shots[index]) : '';
   let status;
   if (!count) status = 'No shots match the current filters.';
-  else if (state.reducedMotion) status = 'Reduced motion is on · step through shots without flight animation.';
+  else if (state.reducedMotion) status = 'Reduced motion is on · use Previous or Next to inspect shots without flight animation.';
+  else if (state.mode === 'heatmap') status = 'Heatmap mode · select Replay to play simulated flights.';
   else if (state.view !== '3d') status = 'Switch to the 3D view to play simulated flights.';
   else if (replay.playing) status = label || 'Starting replay…';
   else if (replay.cursor >= count && !replay.active.length) status = 'Replay complete · press Play to start again.';
   else if (label) status = `${label} · paused`;
   else status = 'Ready · ordered by game, period, and clock time.';
   $('#replay-status').textContent = status;
-  const progress = $('#replay-progress');
-  progress.setAttribute('aria-valuemax', String(count));
-  progress.setAttribute('aria-valuenow', String(displayedIndex >= 0 ? displayedIndex + 1 : 0));
-  $('#replay-progress-bar').style.width = `${count ? ((displayedIndex + 1) / count) * 100 : 0}%`;
+  const selected = index >= 0 ? replay.shots[index] : null;
+  $('#replay-status').setAttribute('aria-label', selected ? `${replayShotLabel(selected)}. ${status}` : status);
+  updateReplayHUD();
+}
+
+function clearMarkers() {
+  const replay = state.replay;
+  replay.markers = [];
+  replay.markerMadeCount = 0;
+  replay.markerMissedCount = 0;
+  for (let index = 0; index < 1600; index += 1) {
+    writeInstance(replay.markerMade, index, null, new THREE.Vector3(1, 1, 1));
+    writeInstance(replay.markerMissed, index, null, new THREE.Vector3(1, 1, 1));
+  }
 }
 
 function clearReplayBalls() {
-  state.replay.active = [];
-  state.replay.stationary = null;
-  for (let slot = 0; slot < REPLAY.maxConcurrent; slot += 1) setReplayBall(slot, null);
+  const replay = state.replay;
+  replay.active = [];
+  replay.stationary = null;
+  for (let slot = 0; slot < REPLAY.maxConcurrent; slot += 1) {
+    setReplayBall(slot, null);
+    writeInstance(replay.sourceRings, slot, null, new THREE.Vector3(1, 1, 1));
+    writeInstance(replay.sourceBeams, slot, null, new THREE.Vector3(1, 1, 1));
+  }
+  for (let index = 0; index < REPLAY.maxConcurrent * REPLAY.trailLength; index += 1) {
+    writeInstance(replay.trailMesh, index, null, new THREE.Vector3(1, 1, 1));
+  }
+  replay.particles.fill(null);
+  for (let index = 0; index < REPLAY.maxParticles; index += 1) writeInstance(replay.particleMesh, index, null, new THREE.Vector3(1, 1, 1));
+  $('#shot-callout').hidden = true;
+  replay.flashAt = -Infinity;
+  updateReplayEffect();
 }
 
 function setReplayShots(shots) {
   pauseReplay(false);
   clearReplayBalls();
+  clearMarkers();
   state.replay.shots = orderedReplayShots(shots);
   state.replay.cursor = 0;
   state.replay.currentIndex = -1;
@@ -831,39 +1050,96 @@ function pauseReplay(refresh = true) {
   if (refresh && $('#replay-play')) updateReplayControls();
 }
 
-function sampleSurfaceHeight(x, z) {
-  if (!state.surface || !state.referencePeak) return 0.08;
-  const col = THREE.MathUtils.clamp(Math.round((x - KDE.xMin) / KDE.stepX), 0, KDE.cols - 1);
-  const row = THREE.MathUtils.clamp(Math.round((z - KDE.zMin) / KDE.stepZ), 0, KDE.rows - 1);
-  const density = state.surface.density[row * KDE.cols + col];
-  return 0.08 + Math.min(KDE.maxHeight, (density / state.referencePeak) * KDE.maxHeight);
+function shotStartHeight(shot) {
+  return shot.distance <= 8 ? 6 : 7;
+}
+
+function shotHash(shot) {
+  let hash = 2166136261;
+  for (const char of shot.id) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+  return hash >>> 0;
+}
+
+function missImpact(shot) {
+  const hash = shotHash(shot);
+  const side = hash & 1 ? 1 : -1;
+  const offset = 0.6 + ((hash >>> 1) % 5) * 0.1;
+  const pattern = (hash >>> 4) % 5;
+  if (pattern === 0) return { type: 'front rim', point: new THREE.Vector3(side * 0.22, 10, offset) };
+  if (pattern === 1) return { type: 'back rim', point: new THREE.Vector3(side * 0.22, 10, -offset) };
+  if (pattern === 2) return { type: 'left rim', point: new THREE.Vector3(-offset, 10, 0) };
+  if (pattern === 3) return { type: 'right rim', point: new THREE.Vector3(offset, 10, 0) };
+  return { type: 'backboard', point: new THREE.Vector3(side * 0.4, 11.3, -1.43) };
+}
+
+function addShotMarker(shot) {
+  const replay = state.replay;
+  if (!replay.keepMarkers) return;
+  const made = shot.made;
+  const slot = made ? replay.markerMadeCount++ : replay.markerMissedCount++;
+  const mesh = made ? replay.markerMade : replay.markerMissed;
+  if (slot >= 1600) return;
+  const rotation = new THREE.Euler(-Math.PI / 2, 0, 0);
+  writeInstance(mesh, slot, new THREE.Vector3(shot.x, 0.025, shot.z), new THREE.Vector3(1, 1, 1), rotation);
+  replay.markers.push({ x: shot.x, z: shot.z, made });
+  mesh.visible = state.mode === 'replay' && state.view === '3d' && replay.keepMarkers;
+}
+
+function updateCallout(shot) {
+  const callout = $('#shot-callout');
+  if (!shot || state.mode !== 'replay' || state.view !== '3d') { callout.hidden = true; return; }
+  const point = new THREE.Vector3(shot.x, shotStartHeight(shot), shot.z).project(state.camera);
+  const rect = stage.getBoundingClientRect();
+  const left = (point.x * 0.5 + 0.5) * rect.width;
+  const top = (-point.y * 0.5 + 0.5) * rect.height;
+  if (point.z < -1 || point.z > 1 || left < 12 || left > rect.width - 160 || top < 35 || top > rect.height - 30) { callout.hidden = true; return; }
+  callout.textContent = `${shot.distance.toFixed(1)} FT · ${shot.type}`;
+  callout.style.left = `${left + 12}px`;
+  callout.style.top = `${top - 14}px`;
+  callout.hidden = false;
 }
 
 function stepReplay(direction) {
   const replay = state.replay;
-  if (!replay.shots.length || state.view !== '3d') return;
+  if (!replay.shots.length || state.view !== '3d' || state.mode !== 'replay') return;
   pauseReplay(false);
   clearReplayBalls();
   const length = replay.shots.length;
-  const index = direction > 0
-    ? replay.cursor % length
-    : (replay.cursor > 0 ? replay.cursor - 2 : length - 1 + length) % length;
+  const index = replay.currentIndex < 0
+    ? (direction > 0 ? 0 : length - 1)
+    : (replay.currentIndex + direction + length) % length;
   const shot = replay.shots[index];
   replay.currentIndex = index;
-  replay.cursor = index + 1;
+  replay.cursor = index;
   replay.stationary = shot;
-  setReplayBall(0, new THREE.Vector3(shot.x, sampleSurfaceHeight(shot.x, shot.z) + REPLAY.ballRadius, shot.z));
+  if (state.reducedMotion) addShotMarker(shot);
+  else setReplayBall(0, new THREE.Vector3(shot.x, shotStartHeight(shot), shot.z));
+  updateCallout(shot);
+  updateReplayControls();
+  render3d();
+}
+
+function seekReplay(index) {
+  const replay = state.replay;
+  if (!replay.shots.length) return;
+  pauseReplay(false);
+  clearReplayBalls();
+  const shotIndex = THREE.MathUtils.clamp(Math.round(index), 0, replay.shots.length - 1);
+  const shot = replay.shots[shotIndex];
+  replay.currentIndex = shotIndex;
+  replay.cursor = shotIndex;
+  replay.stationary = shot;
+  if (state.reducedMotion) addShotMarker(shot);
+  else setReplayBall(0, new THREE.Vector3(shot.x, shotStartHeight(shot), shot.z));
+  updateCallout(shot);
   updateReplayControls();
   render3d();
 }
 
 function playReplay() {
   const replay = state.replay;
-  if (replay.playing) {
-    pauseReplay();
-    return;
-  }
-  if (state.reducedMotion || state.view !== '3d' || !replay.shots.length) return;
+  if (replay.playing) { pauseReplay(); return; }
+  if (state.reducedMotion || state.view !== '3d' || state.mode !== 'replay' || !replay.shots.length) return;
   if (replay.cursor >= replay.shots.length && !replay.active.length) {
     clearReplayBalls();
     replay.cursor = 0;
@@ -878,33 +1154,155 @@ function playReplay() {
   scheduleReplayFrame();
 }
 
-function positionForShot(shot, simProgress) {
-  const surfaceY = sampleSurfaceHeight(shot.x, shot.z);
-  const start = new THREE.Vector3(shot.x, surfaceY + REPLAY.ballRadius, shot.z);
-  const missSide = (shot.sourceIndex % 2 ? 1 : -1) * (shot.x < 0 ? -1 : 1);
-  const impact = shot.made
-    ? new THREE.Vector3(0, 0.32, 0)
-    : new THREE.Vector3(missSide * 0.91, 0.32, 0.08);
-  const rebound = new THREE.Vector3(missSide * 1.78, 1.22, 0.58);
-  const flightFraction = shot.made ? 0.83 : 0.78;
-  const horizontalDistance = Math.hypot(shot.x - impact.x, shot.z - impact.z);
-  const arcHeight = Math.max(3.2, horizontalDistance * 0.28 + 2.1);
-  if (simProgress <= flightFraction) {
-    const t = simProgress / flightFraction;
-    const position = start.clone().lerp(impact, t);
-    position.y = THREE.MathUtils.lerp(start.y, impact.y, t) + 4 * t * (1 - t) * arcHeight;
+function createFlight(shot, shotIndex, slot, now) {
+  const hit = shot.made ? null : missImpact(shot);
+  const impact = shot.made ? new THREE.Vector3(0, 10, 0) : hit.point;
+  const radial = new THREE.Vector3(impact.x, 0, impact.z);
+  if (radial.lengthSq() < 0.01) radial.set(shot.x < 0 ? -1 : 1, 0, 0);
+  radial.normalize();
+  const rebound = hit?.type === 'backboard'
+    ? new THREE.Vector3(impact.x * 0.8, 8.8, 0.8)
+    : impact.clone().add(new THREE.Vector3(radial.x * 1.6, -1.0, radial.z * 1.6));
+  const flightSeconds = THREE.MathUtils.clamp(0.7 + 0.025 * shot.distance, 0.8, 1.6);
+  return {
+    shot, shotIndex, slot, startAt: now, flightMs: flightSeconds * 1000,
+    start: new THREE.Vector3(shot.x, shotStartHeight(shot), shot.z), impact, rebound,
+    variant: hit?.type || 'made', arcHeight: THREE.MathUtils.clamp(2.5 + 0.12 * shot.distance, 3, 9), trail: [],
+  };
+}
+
+function flightPosition(flight, progress) {
+  if (progress < 0.78) {
+    const t = progress / 0.78;
+    const position = flight.start.clone().lerp(flight.impact, t);
+    position.y = THREE.MathUtils.lerp(flight.start.y, flight.impact.y, t) + 4 * flight.arcHeight * t * (1 - t);
     return position;
   }
-  const t = (simProgress - flightFraction) / (1 - flightFraction);
-  if (shot.made) return new THREE.Vector3(0, THREE.MathUtils.lerp(0.32, -0.56, t), 0);
-  const position = impact.clone().lerp(rebound, t);
-  position.y += 4 * t * (1 - t) * 0.9;
-  return position;
+  const t = (progress - 0.78) / 0.22;
+  if (flight.shot.made) return new THREE.Vector3(0, 10 - 9.6 * t * t, 0);
+  if (t < 0.5) {
+    const bounce = t * 2;
+    const position = flight.impact.clone().lerp(flight.rebound, bounce);
+    position.y = THREE.MathUtils.lerp(flight.impact.y, flight.rebound.y, bounce) + 4.5 * bounce * (1 - bounce);
+    return position;
+  }
+  const drop = (t - 0.5) * 2;
+  return new THREE.Vector3(flight.rebound.x, THREE.MathUtils.lerp(flight.rebound.y, REPLAY.ballRadius, drop) + 4 * 0.55 * drop * (1 - drop), flight.rebound.z + drop * 0.35);
+}
+
+function updateTrails(flight, position) {
+  flight.trail.push(position.clone());
+  if (flight.trail.length > REPLAY.trailLength) flight.trail.shift();
+  const startSlot = flight.slot * REPLAY.trailLength;
+  for (let i = 0; i < REPLAY.trailLength; i += 1) {
+    const trailIndex = Math.max(0, flight.trail.length - REPLAY.trailLength + i);
+    const trailPoint = i < REPLAY.trailLength - flight.trail.length ? null : flight.trail[trailIndex];
+    const fade = (i + 1) / REPLAY.trailLength;
+    writeInstance(state.replay.trailMesh, startSlot + i, trailPoint, new THREE.Vector3(fade, fade, fade));
+  }
+}
+
+function emitParticles(flight, atMade, now) {
+  const replay = state.replay;
+  const hash = shotHash(flight.shot);
+  const count = atMade ? 16 : 8;
+  const origin = atMade ? new THREE.Vector3(0, 10.15, 0) : flight.impact.clone();
+  const tint = new THREE.Color(atMade ? '#8cff9d' : '#ff615d');
+  for (let index = 0; index < count; index += 1) {
+    const slot = replay.particleCursor++ % REPLAY.maxParticles;
+    const angle = (Math.PI * 2 * index) / count + ((hash & 255) / 255) * 0.35;
+    const speed = 0.8 + ((hash >>> (index % 16)) & 7) * 0.13;
+    replay.particles[slot] = {
+      start: origin.clone(), startAt: now, life: 0.42 + (index % 4) * 0.06,
+      velocity: new THREE.Vector3(Math.cos(angle) * speed, 1.1 + (index % 5) * 0.28, Math.sin(angle) * speed), color: tint.clone(),
+    };
+    writeInstance(replay.particleMesh, slot, origin, new THREE.Vector3(1, 1, 1), null, tint);
+  }
+}
+
+function updateParticles() {
+  const replay = state.replay;
+  for (let slot = 0; slot < replay.particles.length; slot += 1) {
+    const particle = replay.particles[slot];
+    if (!particle) { writeInstance(replay.particleMesh, slot, null, new THREE.Vector3(1, 1, 1)); continue; }
+    const age = (performance.now() - particle.startAt) / 1000;
+    const progress = age / particle.life;
+    if (progress >= 1) {
+      replay.particles[slot] = null;
+      writeInstance(replay.particleMesh, slot, null, new THREE.Vector3(1, 1, 1));
+    } else {
+      const position = particle.start.clone().addScaledVector(particle.velocity, age);
+      position.y -= 4.5 * age * age;
+      const scale = Math.max(0.03, 1 - progress);
+      writeInstance(replay.particleMesh, slot, position, new THREE.Vector3(scale, scale, scale));
+    }
+  }
+}
+
+function updateShotOrigins() {
+  const replay = state.replay;
+  let calloutShot = null;
+  for (const flight of replay.active) {
+    const age = replay.elapsed - flight.startAt;
+    const slot = flight.slot;
+    if (age < REPLAY.prelaunchMs) {
+      const pulse = 1 + 0.55 * Math.sin(Math.PI * age / REPLAY.prelaunchMs);
+      const tint = new THREE.Color(flight.shot.made ? '#82ff9a' : '#ff7065');
+      const ringRotation = new THREE.Euler(-Math.PI / 2, 0, 0);
+      writeInstance(replay.sourceRings, slot, new THREE.Vector3(flight.shot.x, 0.045, flight.shot.z), new THREE.Vector3(pulse, pulse, pulse), ringRotation, tint);
+      const height = shotStartHeight(flight.shot);
+      writeInstance(replay.sourceBeams, slot, new THREE.Vector3(flight.shot.x, height / 2, flight.shot.z), new THREE.Vector3(1, height, 1), null, tint);
+      if (!calloutShot) calloutShot = flight.shot;
+    } else {
+      writeInstance(replay.sourceRings, slot, null, new THREE.Vector3(1, 1, 1));
+      writeInstance(replay.sourceBeams, slot, null, new THREE.Vector3(1, 1, 1));
+    }
+  }
+  updateCallout(calloutShot);
+}
+
+function followActiveShot() {
+  const replay = state.replay;
+  if (!replay.followShot || state.reducedMotion || !replay.active.length) return;
+  const flight = replay.active.find((item) => replay.elapsed - item.startAt >= REPLAY.prelaunchMs);
+  if (!flight) return;
+  const age = replay.elapsed - flight.startAt - REPLAY.prelaunchMs;
+  const progress = THREE.MathUtils.clamp(age / flight.flightMs, 0, 1);
+  const ball = flightPosition(flight, progress);
+  const target = new THREE.Vector3(ball.x * 0.15, 7 + ball.y * 0.08, 18 + ball.z * 0.12);
+  const offset = state.camera.position.clone().sub(state.controls.target);
+  state.controls.target.lerp(target, 0.025);
+  state.camera.position.copy(state.controls.target).add(offset);
+}
+
+function updateReplayFeedback(now) {
+  const replay = state.replay;
+  const madeFlashAge = now - replay.flashAt;
+  if (madeFlashAge >= 0 && madeFlashAge < 520 && !state.reducedMotion) {
+    const progress = madeFlashAge / 520;
+    replay.flashMesh.material.color.set(replay.flashColor);
+    replay.flashMesh.material.opacity = (1 - progress) * 0.36;
+    replay.flashMesh.scale.setScalar(1 + progress * 1.3);
+    replay.goalLight.color.set(replay.flashColor);
+    replay.goalLight.intensity = 18 + (1 - progress) * 26;
+    replay.hoopMaterial.emissiveIntensity = 0.85 + (1 - progress) * 0.7;
+  } else {
+    replay.flashMesh.material.opacity = 0;
+    replay.flashMesh.scale.setScalar(1);
+    replay.goalLight.color.set('#ffbd72');
+    replay.goalLight.intensity = 18;
+    replay.hoopMaterial.emissiveIntensity = 0.85;
+  }
+  const netAge = now - replay.netPulseAt;
+  replay.netMesh.scale.y = netAge >= 0 && netAge < 520 ? 1 + 0.16 * Math.sin(Math.PI * netAge / 520) : 1;
+  const rimAge = now - replay.rimShakeAt;
+  replay.hoop.rotation.z = rimAge >= 0 && rimAge < 220 ? 0.035 * Math.sin(Math.PI * rimAge / 220) : 0;
 }
 
 function updateReplayFrame(now) {
   const replay = state.replay;
   replay.raf = 0;
+  if (document.hidden) { replay.lastFrame = 0; return; }
   const delta = replay.lastFrame ? Math.min(80, now - replay.lastFrame) : 16.7;
   replay.lastFrame = now;
   if (replay.playing) {
@@ -913,20 +1311,35 @@ function updateReplayFrame(now) {
       const shotIndex = replay.cursor++;
       const slot = Array.from({ length: REPLAY.maxConcurrent }, (_, index) => index).find((index) => !replay.active.some((flight) => flight.slot === index));
       if (slot === undefined) break;
-      replay.active.push({ shot: replay.shots[shotIndex], slot, startAt: replay.elapsed });
+      replay.active.push(createFlight(replay.shots[shotIndex], shotIndex, slot, replay.elapsed));
       replay.currentIndex = shotIndex;
       replay.nextAt = replay.elapsed + REPLAY.intervalMs;
       updateReplayControls();
     }
     const remaining = [];
     for (const flight of replay.active) {
-      const progress = (replay.elapsed - flight.startAt) / REPLAY.flightMs;
+      const age = replay.elapsed - flight.startAt;
+      if (age < REPLAY.prelaunchMs) { remaining.push(flight); continue; }
+      const elapsedFlight = age - REPLAY.prelaunchMs;
+      const progress = elapsedFlight / flight.flightMs;
       if (progress >= 1) {
         setReplayBall(flight.slot, null);
-        if (flight.shot.made) replay.flashAt = now;
+        for (let trail = 0; trail < REPLAY.trailLength; trail += 1) writeInstance(replay.trailMesh, flight.slot * REPLAY.trailLength + trail, null, new THREE.Vector3(1, 1, 1));
+        if (flight.shot.made) {
+          replay.flashAt = now;
+          replay.flashColor = '#8cff9d';
+          replay.netPulseAt = now;
+          emitParticles(flight, true, now);
+        } else {
+          replay.rimShakeAt = now;
+          emitParticles(flight, false, now);
+        }
+        addShotMarker(flight.shot);
       } else {
-        const position = positionForShot(flight.shot, THREE.MathUtils.clamp(progress, 0, 1));
-        setReplayBall(flight.slot, position, progress * Math.PI * 8);
+        const position = flightPosition(flight, THREE.MathUtils.clamp(progress, 0, 1));
+        const ageSeconds = elapsedFlight / 1000;
+        setReplayBall(flight.slot, position, ageSeconds * 7.5);
+        updateTrails(flight, position);
         remaining.push(flight);
       }
     }
@@ -936,33 +1349,23 @@ function updateReplayFrame(now) {
       updateReplayControls();
     }
   }
-  updateReplayEffect(now);
+  updateParticles();
+  updateShotOrigins();
+  updateReplayFeedback(now);
+  followActiveShot();
   state.controls?.update();
   render3d();
-  if (replay.playing || now - replay.flashAt < 360) scheduleReplayFrame();
+  if (replay.playing || now - replay.flashAt < 520 || now - replay.netPulseAt < 520 || now - replay.rimShakeAt < 220 || replay.particles.some(Boolean)) scheduleReplayFrame();
   else replay.lastFrame = 0;
 }
 
 function updateReplayEffect(now = performance.now()) {
-  const replay = state.replay;
-  if (!replay.flashMesh || !replay.goalLight || !replay.hoopMaterial) return;
-  const age = now - replay.flashAt;
-  if (age >= 0 && age < 360 && !state.reducedMotion) {
-    const progress = age / 360;
-    replay.flashMesh.material.opacity = (1 - progress) * 0.9;
-    replay.flashMesh.scale.setScalar(1 + progress * 1.35);
-    replay.goalLight.intensity = 22 + (1 - progress) * 180;
-    replay.hoopMaterial.emissiveIntensity = 0.45 + (1 - progress) * 2.6;
-  } else {
-    replay.flashMesh.material.opacity = 0;
-    replay.flashMesh.scale.setScalar(1);
-    replay.goalLight.intensity = 22;
-    replay.hoopMaterial.emissiveIntensity = 0.45;
-  }
+  if (!state.replay.flashMesh || !state.replay.goalLight || !state.replay.hoopMaterial) return;
+  updateReplayFeedback(now);
 }
 
 function scheduleReplayFrame() {
-  if (!state.replay.raf) state.replay.raf = requestAnimationFrame(updateReplayFrame);
+  if (!document.hidden && !state.replay.raf) state.replay.raf = requestAnimationFrame(updateReplayFrame);
 }
 
 function renderDataTable(bins) {
@@ -980,7 +1383,7 @@ function renderDataTable(bins) {
   $('#data-table-wrap').querySelector('table').addEventListener('click', (event) => {
     const button = event.target.closest('[data-bin]');
     if (button) updateInspector(state.bins[Number(button.dataset.bin)]);
-  }, { once: true });
+  });
 }
 
 function setReducedMotion(enabled) {
@@ -1024,6 +1427,15 @@ function bindControls() {
     state.selectedBin = null; tooltip.hidden = true; renderData();
   });
   $('#view-toggle').addEventListener('click', () => switchView(state.view === '3d' ? '2d' : '3d'));
+  document.querySelectorAll('[data-mode]').forEach((button) => button.addEventListener('click', () => setMode(button.dataset.mode)));
+  document.querySelectorAll('[data-camera]').forEach((button) => button.addEventListener('click', () => applyCameraPreset(button.dataset.camera)));
+  $('#replay-follow').addEventListener('change', (event) => { state.replay.followShot = event.target.checked; });
+  $('#replay-markers').addEventListener('change', (event) => {
+    state.replay.keepMarkers = event.target.checked;
+    for (const mesh of [state.replay.markerMade, state.replay.markerMissed]) if (mesh) mesh.visible = event.target.checked && state.mode === 'replay' && state.view === '3d';
+    render3d();
+  });
+  $('#replay-scrubber').addEventListener('input', (event) => seekReplay(Number(event.target.value)));
   $('#reset-view').addEventListener('click', () => {
     state.controls?.reset();
     state.controls?.update();
@@ -1045,6 +1457,19 @@ function bindControls() {
     showTooltip(sample.bin, event.clientX, event.clientY, true, sample);
   });
   window.addEventListener('keydown', (event) => {
+    const target = event.target;
+    const typing = target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'].includes(target.tagName));
+    if (!typing && state.mode === 'replay' && state.view === '3d') {
+      if (event.code === 'Space') { event.preventDefault(); playReplay(); return; }
+      if (event.key === 'ArrowLeft') { event.preventDefault(); stepReplay(-1); return; }
+      if (event.key === 'ArrowRight') { event.preventDefault(); stepReplay(1); return; }
+      if (/^[1-4]$/.test(event.key)) {
+        const speeds = [0.5, 1, 2, 4];
+        state.replay.speed = speeds[Number(event.key) - 1];
+        $('#replay-speed').value = String(state.replay.speed);
+        return;
+      }
+    }
     if (event.key === 'Escape') { state.selectedBin = null; tooltip.hidden = true; updateInspector(null); }
   });
   const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -1062,6 +1487,7 @@ async function start() {
   bindControls();
   setReducedMotion(state.reducedMotion);
   init3d();
+  setMode('replay');
   try {
     await loadPlayer(state.player);
     renderData();

@@ -1,4 +1,4 @@
-node_modules/
-dist/
-.npm-cache/
-preview*.png
+
+*-court*.png
+top-court.png
+behind-court.png

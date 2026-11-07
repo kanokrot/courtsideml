@@ -39,7 +39,6 @@ def load_season(tag, season):
 
 
 def load_shots(name, tag, season):
-    """กรองช็อตของนักกีฬาคนเดียว แล้วแปลงเป็นรูปแบบเดียวกับ nba_api"""
     league = load_season(tag, season)
     df = league[league["athlete_name_1"].fillna("").str.lower() == name.lower()].copy()
     if df.empty:

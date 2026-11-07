@@ -4,3 +4,4 @@ __pycache__/
 node_modules/
 .npm-cache/
 web/dist/
+/web/preview*.png

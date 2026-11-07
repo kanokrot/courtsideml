@@ -34,7 +34,7 @@ def with_retry(fn, retries=4):
         except Exception as e:
             print(f"ครั้งที่ {i + 1} พลาด: {e}")
             time.sleep(5 * (i + 1))
-    raise RuntimeError("ดึงข้อมูลไม่สำเร็จ น่าจะโดนบล็อก IP ลองรันบนเครื่องตัวเอง")
+    raise RuntimeError("ดึงข้อมูลไม่สำเร็จ")
 
 
 def get_player_id(name, league_id, season):
